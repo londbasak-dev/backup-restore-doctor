@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backup-restore-doctor"
+version = "0.1.0"
+description = "Offline bounded ZIP/TAR auditing and isolated restore drills"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+backup-restore-doctor = "backup_restore_doctor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
