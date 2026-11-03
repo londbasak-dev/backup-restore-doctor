@@ -109,13 +109,13 @@ def _copy_checked(source, target, declared, limits, total):
 
 
 class _SafeTarInfo(tarfile.TarInfo):
-    @classmethod
-    def frombuf(cls, buf, encoding, errors):
-        info = super().frombuf(buf, encoding, errors)
-        # Reject extension headers before tarfile follows them or allocates their payload.
-        if not (info.type in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE)):
+    def _proc_member(self, archive):
+        # This is TarInfo's subclass dispatch hook, before extension payload processing.
+        # Some patched Python versions call _frombuf directly and bypass frombuf
+        # overrides, so a public constructor override is not a security boundary.
+        if self.type not in (tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE):
             raise SafetyError('unsupported_entry')
-        return info
+        return super()._proc_member(archive)
 
 
 class _BudgetReader:

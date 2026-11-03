@@ -9,7 +9,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from backup_restore_doctor.archive import Limits, inspect_archive, SafetyError, _copy_checked
+from backup_restore_doctor.archive import Limits, inspect_archive, SafetyError, _copy_checked, _SafeTarInfo
 from backup_restore_doctor.cli import main
 
 
@@ -72,16 +72,46 @@ class ArchiveTests(unittest.TestCase):
             inspect_archive(path)
 
     def test_tar_links_and_devices_are_rejected(self):
+        def bypass_public_frombuf(cls, archive):
+            # Model patched CPython readers which dispatch through _frombuf,
+            # not through the subclass's public frombuf constructor override.
+            buf = archive.fileobj.read(tarfile.BLOCKSIZE)
+            info = tarfile.TarInfo.frombuf.__func__(cls, buf, archive.encoding, archive.errors)
+            info.offset = archive.fileobj.tell() - tarfile.BLOCKSIZE
+            return info._proc_member(archive)
+
         for kind in (tarfile.SYMTYPE, tarfile.LNKTYPE, tarfile.CHRTYPE, tarfile.FIFOTYPE,
-                     tarfile.XHDTYPE, tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_SPARSE):
-            path = self.root / 'special.tar'
-            with tarfile.open(path, 'w') as archive:
-                info = tarfile.TarInfo('special')
-                info.type = kind
-                info.linkname = 'target'
-                archive.addfile(info)
-            with self.assertRaises(SafetyError):
-                inspect_archive(path)
+                     tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                     tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK,
+                     tarfile.GNUTYPE_SPARSE, b'Z'):
+            with self.subTest(typeflag=kind):
+                path = self.root / 'special.tar'
+                with tarfile.open(path, 'w', format=tarfile.USTAR_FORMAT) as archive:
+                    target = tarfile.TarInfo('target.txt')
+                    target.size = 4
+                    archive.addfile(target, io.BytesIO(b'demo'))
+                    info = tarfile.TarInfo('special')
+                    info.type = kind
+                    info.linkname = 'target.txt'
+                    payload = b''
+                    if kind in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE):
+                        payload = b'16 comment=demo\n'
+                    elif kind in (tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK):
+                        payload = b'renamed.txt\x00'
+                    info.size = len(payload)
+                    archive.addfile(info, io.BytesIO(payload))
+                    # A valid following member prevents truncated extension data from
+                    # accidentally satisfying the unsupported-header security test.
+                    following = tarfile.TarInfo('following.txt')
+                    following.size = 4
+                    archive.addfile(following, io.BytesIO(b'demo'))
+                with self.assertRaises(SafetyError) as rejected:
+                    inspect_archive(path)
+                self.assertEqual(str(rejected.exception), 'unsupported_entry')
+                with patch.object(_SafeTarInfo, 'fromtarfile', classmethod(bypass_public_frombuf)):
+                    with self.assertRaises(SafetyError) as rejected:
+                        inspect_archive(path)
+                self.assertEqual(str(rejected.exception), 'unsupported_entry')
 
     def test_duplicate_casefold_normalization_and_file_parent_collisions(self):
         for names in (('a.txt', 'A.txt'), ('a/./b', 'a/b'), ('a', 'a/b'),
